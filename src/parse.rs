@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::mem::discriminant;
 use std::{mem::Discriminant, sync::LazyLock};
 
-enum Expr {}
+enum Expression {}
 
-enum Stmt {}
+enum Statement {}
 
 enum Associativity {
     Left,
@@ -86,10 +86,6 @@ static OPERATORS: LazyLock<HashMap<Operator, OperatorData>> = LazyLock::new(|| {
         OperatorData::new(3, Associativity::Left),
     ); 
     map.insert(
-        Operator::new(Token::Not, OperatorType::Binary),
-        OperatorData::new(3, Associativity::Left),
-    );
-    map.insert(
         Operator::new(Token::Or, OperatorType::Binary),
         OperatorData::new(3, Associativity::Left),
     );
@@ -121,7 +117,7 @@ static OPERATORS: LazyLock<HashMap<Operator, OperatorData>> = LazyLock::new(|| {
     // BINARY MISC
     map.insert(
         Operator::new(Token::Assignment, OperatorType::Binary),
-        OperatorData::new(20, Associativity::Left),
+        OperatorData::new(1, Associativity::Left),
     );
 
     map

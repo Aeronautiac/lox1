@@ -49,7 +49,7 @@ impl Lox {
             let tok = lexer.next_token();
             if let Ok(token) = tok {
                 println!("{:?}", token);
-                if token == Token::EOF {
+                if token.tok == Token::EOF {
                     return Ok(());
                 }
             } else {

@@ -57,8 +57,8 @@ pub struct TokenLocation {
 
 #[derive(Debug, Clone)]
 pub struct MetaToken {
-    tok: Token,
-    loc: TokenLocation, 
+    pub tok: Token,
+    pub loc: TokenLocation,
 }
 
 static KEYWORDS: LazyLock<HashMap<&str, Token>> = LazyLock::new(|| {
@@ -84,7 +84,8 @@ static KEYWORDS: LazyLock<HashMap<&str, Token>> = LazyLock::new(|| {
     map
 });
 
-pub type LexResult = Result<Token, LexError>;
+pub type LexResult = Result<MetaToken, LexError>;
+type RawLexResult = Result<Token, LexError>;
 
 #[derive(Debug)]
 pub struct Lexer<'a> {
@@ -117,9 +118,10 @@ impl<'a> Lexer<'a> {
             }
         }
         self.curr_start = self.curr_end;
+        let tok_loc = self.token_pos();
 
         if let Some(c) = next_char {
-            let tok: LexResult = match c {
+            let tok: RawLexResult = match c {
                 b'.' => Ok(Token::Dot),
                 b';' => Ok(Token::Semicolon),
                 b',' => Ok(Token::Comma),
@@ -149,13 +151,23 @@ impl<'a> Lexer<'a> {
 
             self.advance();
 
-            tok
+            if let Ok(token) = tok {
+                Ok(MetaToken {
+                    tok: token,
+                    loc: tok_loc,
+                })
+            } else {
+                Err(LexError::InvalidToken)
+            }
         } else {
-            Ok(Token::EOF)
+            Ok(MetaToken {
+                tok: Token::EOF,
+                loc: tok_loc,
+            })
         }
     }
 
-    fn number_literal(&mut self) -> LexResult {
+    fn number_literal(&mut self) -> RawLexResult {
         let mut encountered_dot = false;
         let mut num_str: Vec<u8> = vec![self.peek_curr().unwrap()];
         while let Some(c) = self.peek() {
@@ -182,7 +194,7 @@ impl<'a> Lexer<'a> {
         ))
     }
 
-    fn identifier_or_keyword(&mut self) -> LexResult {
+    fn identifier_or_keyword(&mut self) -> RawLexResult {
         let mut word: Vec<u8> = vec![self.peek_curr().unwrap()];
         while let Some(c) = self.peek() {
             if !c.is_ascii_alphanumeric() && c != b'_' {
@@ -200,7 +212,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn string_literal(&mut self) -> LexResult {
+    fn string_literal(&mut self) -> RawLexResult {
         let mut string = vec![];
         loop {
             let next = self.advance();
@@ -218,7 +230,7 @@ impl<'a> Lexer<'a> {
         Ok(Token::String(string))
     }
 
-    fn greater_specify(&mut self) -> LexResult {
+    fn greater_specify(&mut self) -> RawLexResult {
         let next_char = self.peek();
         if let Some(next) = next_char
             && next == b'='
@@ -230,7 +242,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lesser_specify(&mut self) -> LexResult {
+    fn lesser_specify(&mut self) -> RawLexResult {
         let next_char = self.peek();
         if let Some(next) = next_char
             && next == b'='
@@ -242,7 +254,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn equal_specify(&mut self) -> LexResult {
+    fn equal_specify(&mut self) -> RawLexResult {
         if let Some(next) = self.peek()
             && next == b'='
         {
@@ -253,7 +265,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn exclamation_specify(&mut self) -> LexResult {
+    fn exclamation_specify(&mut self) -> RawLexResult {
         if let Some(next) = self.peek()
             && next == b'='
         {
@@ -315,28 +327,28 @@ mod tests {
     #[test]
     fn newline() {
         let mut lexer = Lexer::new("fun test()\n(\n\n\n)".as_bytes()).unwrap();
-        assert_eq!(lexer.next_token().unwrap(), Token::Function, "1");
+        assert_eq!(lexer.next_token().unwrap().tok, Token::Function, "1");
         assert_eq!(
-            lexer.next_token().unwrap(),
+            lexer.next_token().unwrap().tok,
             Token::Identifier(vec![b't', b'e', b's', b't']),
             "2"
         );
-        assert_eq!(lexer.next_token().unwrap(), Token::ClosingParen, "4");
-        assert_eq!(lexer.next_token().unwrap(), Token::OpeningParen, "5");
-        assert_eq!(lexer.next_token().unwrap(), Token::ClosingParen, "6");
-        assert_eq!(lexer.next_token().unwrap(), Token::EOF, "7");
+        assert_eq!(lexer.next_token().unwrap().tok, Token::OpeningParen, "4");
+        assert_eq!(lexer.next_token().unwrap().tok, Token::ClosingParen, "5");
+        assert_eq!(lexer.next_token().unwrap().tok, Token::ClosingParen, "6");
+        assert_eq!(lexer.next_token().unwrap().tok, Token::EOF, "7");
     }
 
     #[test]
     fn number_whole() {
         let mut lexer = Lexer::new("53".as_bytes()).unwrap();
-        assert_eq!(lexer.next_token().unwrap(), Token::Number(53.0));
+        assert_eq!(lexer.next_token().unwrap().tok, Token::Number(53.0));
     }
 
     #[test]
     fn number_decimal() {
         let mut lexer = Lexer::new("53.13".as_bytes()).unwrap();
-        assert_eq!(lexer.next_token().unwrap(), Token::Number(53.13));
+        assert_eq!(lexer.next_token().unwrap().tok, Token::Number(53.13));
     }
 
     #[test]
