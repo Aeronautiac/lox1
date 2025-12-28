@@ -55,6 +55,12 @@ pub struct TokenLocation {
     pub col: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct MetaToken {
+    tok: Token,
+    loc: TokenLocation, 
+}
+
 static KEYWORDS: LazyLock<HashMap<&str, Token>> = LazyLock::new(|| {
     let mut map = HashMap::new();
 
@@ -73,7 +79,6 @@ static KEYWORDS: LazyLock<HashMap<&str, Token>> = LazyLock::new(|| {
     map.insert("this", Token::This);
     map.insert("super", Token::Super);
     map.insert("if", Token::If);
-    map.insert("else", Token::Else);
     map.insert("nil", Token::Nil);
 
     map
