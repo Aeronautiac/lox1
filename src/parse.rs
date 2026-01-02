@@ -1,5 +1,10 @@
 use super::lex::{MetaToken, Token};
-use std::{collections::HashMap, mem::Discriminant, mem::discriminant, sync::LazyLock};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::Discriminant,
+    mem::discriminant,
+    sync::LazyLock,
+};
 
 enum Direction {
     Left,
@@ -72,7 +77,7 @@ static INFIX_OPS: LazyLock<HashMap<Operator, BindingPower>> = LazyLock::new(|| {
     map.insert(op(&Token::EqualTo), l_assoc(logical));
     map.insert(op(&Token::NotEqualTo), l_assoc(logical));
 
-    // BINARY MISC 
+    // BINARY MISC
     map.insert(op(&Token::Dot), l_assoc(30));
     map.insert(op(&Token::Assignment), r_assoc(5));
 
@@ -91,6 +96,26 @@ fn postfix_op(tok: &Token) -> Option<&BindingPower> {
     POSTFIX_OPS.get(&op(tok))
 }
 
+// stores any nud tokens which may not appear in the prefix operator map
+static EXTRA_NUD_TOKENS: LazyLock<HashSet<Discriminant<Token>>> = LazyLock::new(|| {
+    let mut set: HashSet<Discriminant<Token>> = HashSet::new();
+
+    set.insert(discriminant(&Token::String(vec![])));
+    set.insert(discriminant(&Token::Number(0.0)));
+    set.insert(discriminant(&Token::Identifier(vec![])));
+    set.insert(discriminant(&Token::Nil));
+    set.insert(discriminant(&Token::Boolean(true)));
+    set.insert(discriminant(&Token::OpeningParen));
+    set.insert(discriminant(&Token::This));
+
+    set
+});
+
+// return true if the token may be parsed as part of a nud expression
+fn is_nud(tok: &Token) -> bool {
+    prefix_op(tok).is_some() || EXTRA_NUD_TOKENS.contains(&discriminant(tok))
+}
+
 pub enum Expression {
     Binary {
         operator: Token,
@@ -104,7 +129,9 @@ pub enum Expression {
     Value(Token),
 }
 
-pub enum Statement {}
+pub enum Statement {
+    Block { statements: Vec<Statement> },
+}
 
 pub struct Parser {
     tokens: Vec<MetaToken>,
@@ -115,6 +142,7 @@ pub struct Parser {
 
 pub enum ParseError {
     UnknownExpression,
+    AmbiguousExpression,
 }
 
 type ExprMatchResult = Result<Box<Expression>, ParseError>;
@@ -161,19 +189,17 @@ impl Parser {
         &self.tokens[self.curr_tok_index]
     }
 
-    // null denotation handler
-    // attempts to match a nud expr
-    // returns the expression node if matched
-    // otherwise, returns a ParseError
-    // prefix is handled in led
     fn nud_expr(&mut self) -> ExprMatchResult {
         let curr_tok_meta = self.advance().clone();
         let curr_tok = &curr_tok_meta.tok;
 
         match curr_tok {
-            Token::Number(_) | Token::String(_) | Token::Boolean(_) | Token::Identifier(_) => {
-                self.value_expr()
-            }
+            Token::Number(_)
+            | Token::String(_)
+            | Token::Boolean(_)
+            | Token::Identifier(_)
+            | Token::This
+            | Token::Nil => self.value_expr(),
             Token::OpeningParen => self.paren(),
             _ if self.is_prefix_op() => self.prefix_op(),
             _ => {
@@ -192,6 +218,28 @@ impl Parser {
         prefix_op(&self.peek().tok).is_some()
     }
 
+    fn is_postfix_op(&mut self) -> bool {
+        postfix_op(&self.peek().tok).is_some() && !self.is_infix_op()
+    }
+
+    // look ahead by one token to determine if the next token
+    // is NUD
+    fn is_infix_op(&mut self) -> bool {
+        infix_op(&self.peek().tok).is_some() && is_nud(&self.peek_next().tok)
+    }
+
+    // ambiguous when:
+    // current token can either be infix or postfix
+    // and
+    // next token can be infix and (prefix or postfix)
+    fn is_ambiguous_led(&mut self) -> bool {
+        let next_tok = self.peek_next().tok.clone();
+        let curr_tok = &self.peek().tok;
+        (infix_op(curr_tok).is_some() && postfix_op(curr_tok).is_some())
+            && (infix_op(&next_tok).is_some()
+                && (prefix_op(&next_tok).is_some() || postfix_op(&next_tok).is_some()))
+    }
+
     fn value_expr(&mut self) -> ExprMatchResult {
         let curr_tok: &MetaToken = self.peek();
         Ok(Box::new(Expression::Value(curr_tok.tok.clone())))
@@ -206,9 +254,29 @@ impl Parser {
         }))
     }
 
-    fn led_expr(&mut self) -> ExprMatchResult {}
+    fn infix_op(&mut self, lhs: Box<Expression>) -> ExprMatchResult {
+        let curr = &self.peek().tok;
+        let rbp = infix_op(curr).unwrap().1;
+        Ok(Box::new(Expression::Binary {
+            operator: curr.clone(),
+            left: lhs,
+            right: self.expr_bp(rbp)?,
+        }))
+    }
 
-    fn postfix_op(&mut self, child: Expression) -> ExprMatchResult {}
+    fn postfix_op(&mut self, child: Box<Expression>) -> ExprMatchResult {
+        let curr = &self.peek().tok;
+        let rbp = postfix_op(curr).unwrap().1;
+        Ok(Box::new(Expression::Unary {
+            operator: curr.clone(),
+            target: child,
+        }))
+    }
+
+    fn expr(&mut self) -> ExprMatchResult {
+        self.expr_bp(0)
+    }
+
     // first, we parse some initial expression (nud) (value, unary op, misc expr (if, block, match, etc...) or paren expr).
     // that first expression is saved as node.
     // then, while there is a binary operator (led) and the precedence/binding power of the operator being parsed is higher than the passed binding power,
@@ -219,13 +287,41 @@ impl Parser {
     // in top level expression calls, pass a binding power of 0
     // in some cases, binding power needs to be overwritten. most of the time, it is propagated. this means that most expression handlers
     // require a binding power parameter to propagate back to parse_expr. either this, or the parser struct holds a binding power value (this sounds nicer)
-    fn expr(&mut self) -> ExprMatchResult {
-        self.expr_bp(0)
-    }
-
     fn expr_bp(&mut self, bp: BpVal) -> ExprMatchResult {
         self.min_bp = bp;
-        let mut left = self.nud_expr();
-        loop {}
+        let mut left = self.nud_expr()?;
+
+        loop {
+            // while there is an led and the operator's right binding power > min_bp
+            // if the current token is a postfix operator or a binary operator, then there is an led
+            let is_infix = self.is_infix_op();
+            let is_postfix = self.is_postfix_op();
+            if !(is_infix || is_postfix) {
+                break;
+            }
+
+            if self.is_ambiguous_led() {
+                return Err(ParseError::AmbiguousExpression);
+            }
+
+            // also need to check if rbp is larger than min_bp
+            // this will differ based on whether it is infix or postfix, so this must be handled
+            // after the if statements
+            if is_infix {
+                let lbp = infix_op(&self.peek().tok).unwrap().0;
+                if lbp < self.min_bp {
+                    break;
+                }
+                left = self.infix_op(left)?;
+            } else if is_postfix {
+                let lbp = postfix_op(&self.peek().tok).unwrap().0;
+                if lbp < self.min_bp {
+                    break;
+                }
+                left = self.postfix_op(left)?;
+            }
+        }
+
+        Ok(left)
     }
 }
